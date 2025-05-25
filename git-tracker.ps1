@@ -1,5 +1,5 @@
 # Git Tracker Script for Caret Tracker Service
-# This script automatically tracks changes and commits them to git with descriptive messages
+# This script analyzes changes and creates meaningful commit messages
 # Note: All comments in code and commit messages must be in English
 
 # Function to detect which files have been modified
@@ -57,106 +57,11 @@ function Get-TaskId {
     return $taskId
 }
 
-# Function to analyze changes using AI
-function Get-AIAnalysis {
-    param (
-        [string[]]$files
-    )
-    
-    $analysis = @()
-    
-    foreach ($file in $files) {
-        # Get the diff for the file
-        $diff = git diff $file
-        
-        # Get the file content
-        $content = Get-Content $file -Raw
-        
-        # Create a prompt for AI analysis
-        $prompt = @"
-Analyze these changes and provide a brief, meaningful description of what was changed and why.
-Focus on the purpose and impact of the changes, not just technical details.
-
-File: $file
-Changes:
-$diff
-
-Current Content:
-$content
-
-Provide a brief analysis in this format:
-PURPOSE: [Why these changes were made]
-IMPACT: [What these changes accomplish]
-"@
-
-        # Here you would integrate with an AI service
-        # For now, we'll use a simple analysis based on patterns
-        $purpose = ""
-        $impact = ""
-        
-        if ($file -match "\.cs$") {
-            if ($diff -match "class\s+\w+") {
-                $purpose = "Implement new functionality"
-                $impact = "Adds new class to handle specific feature"
-            }
-            elseif ($diff -match "using\s+\w+") {
-                $purpose = "Add required dependencies"
-                $impact = "Enables new functionality through external libraries"
-            }
-            elseif ($diff -match "async\s+Task") {
-                $purpose = "Implement asynchronous operation"
-                $impact = "Improves performance and responsiveness"
-            }
-            elseif ($diff -match "\[DllImport") {
-                $purpose = "Integrate with Windows API"
-                $impact = "Enables system-level functionality"
-            }
-            else {
-                $purpose = "Refine existing implementation"
-                $impact = "Improves code quality and functionality"
-            }
-        }
-        elseif ($file -match "\.csproj$") {
-            if ($diff -match "<PropertyGroup>") {
-                $purpose = "Configure project settings"
-                $impact = "Sets up build and runtime parameters"
-            }
-            elseif ($diff -match "<PackageReference") {
-                $purpose = "Add project dependencies"
-                $impact = "Enables required functionality through NuGet packages"
-            }
-            else {
-                $purpose = "Update project configuration"
-                $impact = "Modifies build and deployment settings"
-            }
-        }
-        elseif ($file -match "\.json$") {
-            $purpose = "Update configuration"
-            $impact = "Modifies application behavior and settings"
-        }
-        elseif ($file -match "\.md$") {
-            $purpose = "Update documentation"
-            $impact = "Improves project documentation and clarity"
-        }
-        
-        $analysis += @{
-            File = $file
-            Purpose = $purpose
-            Impact = $impact
-        }
-    }
-    
-    return $analysis
-}
-
-# Function to generate commit message based on AI analysis
+# Function to analyze changes and generate detailed commit message
 function Get-CommitMessage {
     param (
         [string[]]$files
     )
-    
-    # Get AI analysis of changes
-    $analysis = Get-AIAnalysis -files $files
     
     # Get task ID from the most relevant file
     $taskId = "000"
@@ -164,16 +69,85 @@ function Get-CommitMessage {
         $taskId = Get-TaskId -fileName $files[0]
     }
     
-    # Generate meaningful commit message
-    $message = ""
-    if ($analysis.Count -eq 1) {
-        $a = $analysis[0]
-        $message = "$($a.Purpose) - $($a.Impact)"
+    # Analyze changes in each file
+    $changeDetails = @()
+    foreach ($file in $files) {
+        $diff = git diff $file
+        $content = Get-Content $file -Raw
+        
+        # Analyze changes based on file type and content
+        if ($file -match "\.cs$") {
+            if ($diff -match "class\s+\w+") {
+                $className = [regex]::Match($diff, "class\s+(\w+)").Groups[1].Value
+                $changeDetails += "Added $className class for handling specific functionality"
+            }
+            if ($diff -match "using\s+\w+") {
+                $namespaces = [regex]::Matches($diff, "using\s+([\w\.]+)") | ForEach-Object { $_.Groups[1].Value }
+                $changeDetails += "Added required namespaces: $($namespaces -join ', ')"
+            }
+            if ($diff -match "async\s+Task") {
+                $methodName = [regex]::Match($diff, "async\s+Task\s+(\w+)").Groups[1].Value
+                $changeDetails += "Implemented async $methodName method for better performance"
+            }
+            if ($diff -match "\[DllImport") {
+                $changeDetails += "Added Windows API imports for system-level functionality"
+            }
+            if ($diff -match "try\s*{") {
+                $changeDetails += "Added error handling for better reliability"
+            }
+        }
+        elseif ($file -match "\.csproj$") {
+            if ($diff -match "<PropertyGroup>") {
+                $properties = [regex]::Matches($diff, "<(\w+)>([^<]+)</\1>") | ForEach-Object { "$($_.Groups[1].Value)=$($_.Groups[2].Value)" }
+                $changeDetails += "Updated project properties: $($properties -join ', ')"
+            }
+            if ($diff -match "<PackageReference") {
+                $packages = [regex]::Matches($diff, "Include=`"([^`"]+)`"") | ForEach-Object { $_.Groups[1].Value }
+                $changeDetails += "Added/updated NuGet packages: $($packages -join ', ')"
+            }
+        }
+        elseif ($file -match "\.json$") {
+            $changeDetails += "Updated configuration settings for application behavior"
+        }
+        elseif ($file -match "\.md$") {
+            $changeDetails += "Updated documentation with latest changes"
+        }
     }
-    else {
-        $purposes = $analysis | ForEach-Object { $_.Purpose } | Select-Object -Unique
-        $impacts = $analysis | ForEach-Object { $_.Impact } | Select-Object -Unique
-        $message = "Multiple changes: $($purposes -join ', ') - $($impacts -join ', ')"
+    
+    # Generate the commit message
+    $message = switch ($taskId) {
+        "001" { 
+            "Initialize project structure`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
+        "002" { 
+            "Implement configuration system`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
+        "003" { 
+            "Add caret position detection`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
+        "004" { 
+            "Create JSON output system`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
+        "005" { 
+            "Implement periodic tracking`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
+        "006" { 
+            "Setup background service`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
+        "007" { 
+            "Add logging system`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
+        default { 
+            "Update project files`n" + 
+            ($changeDetails | ForEach-Object { "- $_" }) -join "`n"
+        }
     }
     
     return @{
@@ -218,9 +192,9 @@ Commit-AllChanges
 
 # Instructions for use:
 # 1. After making changes, simply run this script
-# 2. It will automatically detect changed files
-# 3. Generate an appropriate commit message
-# 4. Commit all changes with a standardized message
+# 2. It will analyze the changes and create a detailed commit message
+# 3. The message will explain what was changed and why
+# 4. Commit all changes with the generated message
 #
 # Example:
 # .\git-tracker.ps1 
