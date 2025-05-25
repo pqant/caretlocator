@@ -79,6 +79,10 @@ namespace CaretTracker.Service
         {
             try
             {
+                // Register system event handlers
+                AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+                AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+
                 if (OperatingSystem.IsWindows())
                 {
                     InitializeEventLog();
@@ -108,6 +112,55 @@ namespace CaretTracker.Service
                 }
                 Console.WriteLine($"Fatal error: {ex.Message}");
                 Environment.Exit(1);
+            }
+        }
+
+        /// <summary>
+        /// Handles process exit event
+        /// </summary>
+        private static void OnProcessExit(object? sender, EventArgs e)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    eventLog?.WriteEntry("Service is shutting down...", EventLogEntryType.Information);
+                }
+
+                // Cleanup resources
+                timer?.Dispose();
+                cancellationTokenSource?.Cancel();
+                cancellationTokenSource?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    eventLog?.WriteEntry($"Error during shutdown: {ex.Message}", EventLogEntryType.Error);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Handles unhandled exceptions
+        /// </summary>
+        private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    eventLog?.WriteEntry($"Unhandled exception: {e.ExceptionObject}", EventLogEntryType.Error);
+                }
+
+                // Cleanup resources
+                timer?.Dispose();
+                cancellationTokenSource?.Cancel();
+                cancellationTokenSource?.Dispose();
+            }
+            catch
+            {
+                // Ignore errors during emergency shutdown
             }
         }
 
