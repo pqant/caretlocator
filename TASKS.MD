@@ -4,7 +4,7 @@
 
 ## Setup Tasks
 
-- [ ] **TASK-001**: Initialize project structure
+- [] **TASK-001**: Initialize project structure
   - Create .NET 6.0 application
   - Setup solution and project files
   - Configure build settings for x64 architecture
