@@ -22,7 +22,7 @@ namespace CaretTracker.Service
         /// Supports environment variables like %USERPROFILE%.
         /// </summary>
         [JsonPropertyName("output_path")]
-        public string OutputPath { get; set; } = "caret_data"; // Default value, will be treated as a directory
+        public string OutputPath { get; set; } = "%AppData%\\dev-coder-v1\\caret_position.json"; // Default value
 
         private const string DefaultConfigFileName = "caret_config.json";
 
@@ -70,8 +70,12 @@ namespace CaretTracker.Service
                 {
                     if (OperatingSystem.IsWindows())
                     {
-                        eventLog?.WriteEntry($"Configuration file '{configFilePath}' not found. Using default configuration. Update Interval: 100ms, Output Path: 'caret_data'", EventLogEntryType.Warning);
+                        eventLog?.WriteEntry($"Configuration file '{configFilePath}' not found. Creating default configuration.", EventLogEntryType.Warning);
                     }
+                    // Create default configuration file
+                    var defaultConfig = new Configuration();
+                    defaultConfig.Save(configFilePath);
+                    return defaultConfig;
                 }
             }
             catch (JsonException ex)
@@ -91,6 +95,34 @@ namespace CaretTracker.Service
             
             // Return default configuration if file not found, is empty, or error occurs
             return new Configuration();
+        }
+
+        /// <summary>
+        /// Saves the current configuration to the specified JSON file.
+        /// </summary>
+        /// <param name="configFilePath">The path to save the configuration file.</param>
+        /// <param name="eventLog">Optional EventLog instance for logging warnings.</param>
+        public void Save(string configFilePath = DefaultConfigFileName, EventLog? eventLog = null)
+        {
+            try
+            {
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string json = JsonSerializer.Serialize(this, options);
+                File.WriteAllText(configFilePath, json);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    eventLog?.WriteEntry($"Configuration saved successfully to '{configFilePath}'. Update Interval: {UpdateIntervalMs}ms, Output Path: {OutputPath}", EventLogEntryType.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    eventLog?.WriteEntry($"Error saving configuration to '{configFilePath}': {ex.Message}", EventLogEntryType.Error);
+                }
+                throw;
+            }
         }
 
         /// <summary>

@@ -68,7 +68,9 @@ namespace CaretTracker.Service
         private static CancellationTokenSource? cancellationTokenSource;
         private const string EventLogSource = "CaretTracker";
         private const string EventLogName = "Application";
-        private const string OutputDirectory = "caret_data";
+        private static Configuration? configuration;
+        private static CaretPosition? lastPosition = null;
+        private static System.Threading.Timer? timer;
 
         /// <summary>
         /// Main entry point of the application
@@ -80,6 +82,13 @@ namespace CaretTracker.Service
                 if (OperatingSystem.IsWindows())
                 {
                     InitializeEventLog();
+                }
+
+                // Load configuration
+                configuration = Configuration.Load(eventLog: eventLog);
+                if (OperatingSystem.IsWindows())
+                {
+                    eventLog?.WriteEntry($"Configuration loaded. Update Interval: {configuration.UpdateIntervalMs}ms, Output Path: {configuration.OutputPath}", EventLogEntryType.Information);
                 }
 
                 cancellationTokenSource = new CancellationTokenSource();
@@ -135,6 +144,11 @@ namespace CaretTracker.Service
         /// </summary>
         private static async Task RunServiceAsync(CancellationToken cancellationToken)
         {
+            if (configuration == null)
+            {
+                throw new InvalidOperationException("Configuration not loaded");
+            }
+
             Console.WriteLine("Caret Tracker Service is running. Press Ctrl+C to stop.");
 
             if (OperatingSystem.IsWindows())
@@ -142,45 +156,79 @@ namespace CaretTracker.Service
                 eventLog?.WriteEntry("Service started successfully", EventLogEntryType.Information);
             }
 
-            while (!cancellationToken.IsCancellationRequested)
+            // Initialize timer
+            timer = new System.Threading.Timer(
+                async _ => await TrackCaretPositionAsync(cancellationToken),
+                null,
+                TimeSpan.Zero,
+                TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs)
+            );
+
+            try
             {
-                try
+                // Keep the service running until cancellation is requested
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        var caretInfo = GetCaretPosition();
-                        if (caretInfo.HasValue)
-                        {
-                            var foregroundWindow = GetForegroundWindow();
-                            var position = new CaretPosition
-                            {
-                                X = caretInfo.Value.x,
-                                Y = caretInfo.Value.y,
-                                Timestamp = DateTime.Now,
-                                WindowTitle = GetWindowTitle(foregroundWindow),
-                                ProcessName = GetProcessName(foregroundWindow)
-                            };
-
-                            await WritePositionToFileAsync(position);
-                        }
-                    }
-
-                    await Task.Delay(100, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        eventLog?.WriteEntry($"Error tracking caret: {ex.Message}", EventLogEntryType.Error);
-                    }
-                    Console.WriteLine($"Error tracking caret: {ex.Message}");
                     await Task.Delay(1000, cancellationToken);
                 }
+            }
+            finally
+            {
+                // Cleanup timer
+                timer?.Dispose();
+                timer = null;
             }
 
             if (OperatingSystem.IsWindows())
             {
                 eventLog?.WriteEntry("Service stopped", EventLogEntryType.Information);
+            }
+        }
+
+        /// <summary>
+        /// Tracks caret position and writes to file if position has changed
+        /// </summary>
+        private static async Task TrackCaretPositionAsync(CancellationToken cancellationToken)
+        {
+            if (configuration == null) return;
+
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    var caretInfo = GetCaretPosition();
+                    if (caretInfo.HasValue)
+                    {
+                        var foregroundWindow = GetForegroundWindow();
+                        var position = new CaretPosition
+                        {
+                            X = caretInfo.Value.x,
+                            Y = caretInfo.Value.y,
+                            Timestamp = DateTime.Now,
+                            WindowTitle = GetWindowTitle(foregroundWindow),
+                            ProcessName = GetProcessName(foregroundWindow)
+                        };
+
+                        // Only update if position has changed
+                        if (lastPosition == null || 
+                            position.X != lastPosition.X || 
+                            position.Y != lastPosition.Y || 
+                            position.WindowTitle != lastPosition.WindowTitle || 
+                            position.ProcessName != lastPosition.ProcessName)
+                        {
+                            lastPosition = position;
+                            await WritePositionToFileAsync(position, configuration);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    eventLog?.WriteEntry($"Error tracking caret: {ex.Message}", EventLogEntryType.Error);
+                }
+                Console.WriteLine($"Error tracking caret: {ex.Message}");
             }
         }
 
@@ -283,16 +331,17 @@ namespace CaretTracker.Service
         /// <summary>
         /// Writes the caret position to a JSON file
         /// </summary>
-        private static async Task WritePositionToFileAsync(CaretPosition position)
+        private static async Task WritePositionToFileAsync(CaretPosition position, Configuration config)
         {
             try
             {
-                if (!Directory.Exists(OutputDirectory))
+                string outputDir = config.GetExpandedOutputDirectory();
+                if (!Directory.Exists(outputDir))
                 {
-                    Directory.CreateDirectory(OutputDirectory);
+                    Directory.CreateDirectory(outputDir);
                 }
 
-                string fileName = Path.Combine(OutputDirectory, $"caret_{DateTime.Now:yyyyMMdd_HHmmss}.json");
+                string fileName = Path.Combine(outputDir, $"caret_{DateTime.Now:yyyyMMdd_HHmmss}.json");
                 string json = JsonSerializer.Serialize(position, new JsonSerializerOptions { WriteIndented = true });
                 await File.WriteAllTextAsync(fileName, json);
             }

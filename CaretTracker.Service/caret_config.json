@@ -1,4 +1,0 @@
-{
-    "UpdateIntervalMs": 100,
-    "OutputPath": "%AppData%\\dev-coder-v1\\caret_position.json"
-}
