@@ -444,6 +444,7 @@ namespace CaretTracker.Service
         /// <summary>
         /// Writes the caret position to a JSON file
         /// </summary>
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
         private static async Task WritePositionToFileAsync(CaretPosition position, Configuration config)
         {
             try
@@ -457,12 +458,17 @@ namespace CaretTracker.Service
                 string fileName = Path.Combine(outputDir, $"caret_{DateTime.Now:yyyyMMdd_HHmmss}.json");
                 string json = JsonSerializer.Serialize(position, new JsonSerializerOptions { WriteIndented = true });
                 await File.WriteAllTextAsync(fileName, json);
+
+                if (OperatingSystem.IsWindows())
+                {
+                    WriteLog($"Position written to file: {fileName}");
+                }
             }
             catch (Exception ex)
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    eventLog?.WriteEntry($"Error writing position to file: {ex.Message}", EventLogEntryType.Error);
+                    WriteLog($"Error writing position to file: {ex.Message}", EventLogEntryType.Error);
                 }
                 Console.WriteLine($"Error writing position to file: {ex.Message}");
             }
