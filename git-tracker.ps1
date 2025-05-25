@@ -57,58 +57,123 @@ function Get-TaskId {
     return $taskId
 }
 
-# Function to generate commit message based on changes
+# Function to analyze changes using AI
+function Get-AIAnalysis {
+    param (
+        [string[]]$files
+    )
+    
+    $analysis = @()
+    
+    foreach ($file in $files) {
+        # Get the diff for the file
+        $diff = git diff $file
+        
+        # Get the file content
+        $content = Get-Content $file -Raw
+        
+        # Create a prompt for AI analysis
+        $prompt = @"
+Analyze these changes and provide a brief, meaningful description of what was changed and why.
+Focus on the purpose and impact of the changes, not just technical details.
+
+File: $file
+Changes:
+$diff
+
+Current Content:
+$content
+
+Provide a brief analysis in this format:
+PURPOSE: [Why these changes were made]
+IMPACT: [What these changes accomplish]
+"@
+
+        # Here you would integrate with an AI service
+        # For now, we'll use a simple analysis based on patterns
+        $purpose = ""
+        $impact = ""
+        
+        if ($file -match "\.cs$") {
+            if ($diff -match "class\s+\w+") {
+                $purpose = "Implement new functionality"
+                $impact = "Adds new class to handle specific feature"
+            }
+            elseif ($diff -match "using\s+\w+") {
+                $purpose = "Add required dependencies"
+                $impact = "Enables new functionality through external libraries"
+            }
+            elseif ($diff -match "async\s+Task") {
+                $purpose = "Implement asynchronous operation"
+                $impact = "Improves performance and responsiveness"
+            }
+            elseif ($diff -match "\[DllImport") {
+                $purpose = "Integrate with Windows API"
+                $impact = "Enables system-level functionality"
+            }
+            else {
+                $purpose = "Refine existing implementation"
+                $impact = "Improves code quality and functionality"
+            }
+        }
+        elseif ($file -match "\.csproj$") {
+            if ($diff -match "<PropertyGroup>") {
+                $purpose = "Configure project settings"
+                $impact = "Sets up build and runtime parameters"
+            }
+            elseif ($diff -match "<PackageReference") {
+                $purpose = "Add project dependencies"
+                $impact = "Enables required functionality through NuGet packages"
+            }
+            else {
+                $purpose = "Update project configuration"
+                $impact = "Modifies build and deployment settings"
+            }
+        }
+        elseif ($file -match "\.json$") {
+            $purpose = "Update configuration"
+            $impact = "Modifies application behavior and settings"
+        }
+        elseif ($file -match "\.md$") {
+            $purpose = "Update documentation"
+            $impact = "Improves project documentation and clarity"
+        }
+        
+        $analysis += @{
+            File = $file
+            Purpose = $purpose
+            Impact = $impact
+        }
+    }
+    
+    return $analysis
+}
+
+# Function to generate commit message based on AI analysis
 function Get-CommitMessage {
     param (
         [string[]]$files
     )
     
-    # Default message
-    $message = "Update project files"
-    $taskId = "000"
+    # Get AI analysis of changes
+    $analysis = Get-AIAnalysis -files $files
     
-    # If only one file is changed, make a more specific message
-    if ($files.Count -eq 1) {
-        $file = $files[0]
-        $fileName = Split-Path $file -Leaf
-        $taskId = Get-TaskId -fileName $file
-        
-        # Generate message based on file type
-        if ($fileName -match "\.cs$") {
-            $message = "Update $fileName code"
-        }
-        elseif ($fileName -match "\.md$") {
-            $message = "Update documentation in $fileName"
-        }
-        elseif ($fileName -match "\.json$") {
-            $message = "Update configuration in $fileName"
-        }
-        elseif ($fileName -match "\.csproj$") {
-            $message = "Update project settings"
-        }
-        else {
-            $message = "Update $fileName"
-        }
+    # Get task ID from the most relevant file
+    $taskId = "000"
+    if ($files.Count -gt 0) {
+        $taskId = Get-TaskId -fileName $files[0]
+    }
+    
+    # Generate meaningful commit message
+    $message = ""
+    if ($analysis.Count -eq 1) {
+        $a = $analysis[0]
+        $message = "$($a.Purpose) - $($a.Impact)"
     }
     else {
-        # Multiple files changed
-        $codeFiles = $files | Where-Object { $_ -match "\.cs$" }
-        $docFiles = $files | Where-Object { $_ -match "\.md$" }
-        $configFiles = $files | Where-Object { $_ -match "\.json$" }
-        
-        if ($codeFiles.Count -gt 0 -and $docFiles.Count -eq 0 -and $configFiles.Count -eq 0) {
-            $message = "Update code files"
-            # Try to get task ID from first code file
-            if ($codeFiles.Count -gt 0) {
-                $taskId = Get-TaskId -fileName $codeFiles[0]
-            }
-        }
-        elseif ($docFiles.Count -gt 0 -and $codeFiles.Count -eq 0) {
-            $message = "Update documentation"
-        }
-        elseif ($configFiles.Count -gt 0 -and $codeFiles.Count -eq 0 -and $docFiles.Count -eq 0) {
-            $message = "Update configuration files"
-        }
+        $purposes = $analysis | ForEach-Object { $_.Purpose } | Select-Object -Unique
+        $impacts = $analysis | ForEach-Object { $_.Impact } | Select-Object -Unique
+        $message = "Multiple changes: $($purposes -join ', ') - $($impacts -join ', ')"
     }
     
     return @{
