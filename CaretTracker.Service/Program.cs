@@ -13,11 +13,16 @@ namespace CaretTracker.Service
         static async Task Main(string[] args)
         {
             Console.WriteLine("Caret Tracker Service Starting...");
-            
+
+            // Load configuration
+            var config = Configuration.Load();
+            Console.WriteLine($"Update interval: {config.UpdateIntervalMs} ms");
+            Console.WriteLine($"Output path: {config.OutputPath}");
+
             try
             {
-                // Main service loop will be implemented here
-                await RunServiceAsync();
+                // Pass configuration to service loop
+                await RunServiceAsync(config);
             }
             catch (Exception ex)
             {
@@ -26,13 +31,13 @@ namespace CaretTracker.Service
             }
         }
 
-        private static async Task RunServiceAsync()
+        private static async Task RunServiceAsync(Configuration config)
         {
             // Service implementation will be added here
-            // This is just a placeholder for now
+            // Use configured update interval
             while (true)
             {
-                await Task.Delay(1000);
+                await Task.Delay(config.UpdateIntervalMs);
             }
         }
     }
