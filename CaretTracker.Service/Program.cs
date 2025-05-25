@@ -64,15 +64,69 @@ namespace CaretTracker.Service
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
+        // Windows API declarations for console window visibility
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetConsoleWindow();
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+        private delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        private const int SW_HIDE = 0;
+        private const int SW_SHOW = 5;
+        private const uint WINEVENT_OUTOFCONTEXT = 0;
+        private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        private const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+        private const uint EVENT_OBJECT_FOCUS = 0x8005;
+        private const uint EVENT_OBJECT_VALUECHANGE = 0x800E;
+        private const uint EVENT_OBJECT_SELECTION = 0x8006;
+        private const uint EVENT_OBJECT_CONTENTSCROLLED = 0x8015;
+        private const int HWND_TOPMOST = -1;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint OBJID_CARET = 0xFFFFFFF8;
+        private const int WH_KEYBOARD_LL = 13;
+        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_SYSKEYDOWN = 0x0104;
+        private const int VK_CONTROL = 0x11;
+        private const int VK_C = 0x43;
+
         private static EventLog? eventLog;
         private static CancellationTokenSource? cancellationTokenSource;
         private const string EventLogSource = "CaretTracker";
         private const string EventLogName = "Application";
         private static Configuration? configuration;
         private static CaretPosition? lastPosition = null;
-        private static System.Threading.Timer? timer;
+        private static IntPtr? winEventHook;
         private static StreamWriter? debugLogWriter;
         private static readonly object logLock = new object();
+        private static System.Threading.Timer? fallbackTimer;
+        private static IntPtr? keyboardHook;
+        private static bool isCtrlPressed = false;
 
         /// <summary>
         /// Writes a log entry to both EventLog and debug log file
@@ -94,22 +148,7 @@ namespace CaretTracker.Service
             {
                 lock (logLock)
                 {
-                    if (debugLogWriter == null)
-                    {
-                        var logPath = Path.Combine(
-                            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                            "dev-coder-v1",
-                            "caret_tracker_debug.log"
-                        );
-                        
-                        // Ensure directory exists
-                        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
-                        
-                        debugLogWriter = new StreamWriter(logPath, true, Encoding.UTF8)
-                        {
-                            AutoFlush = true
-                        };
-                    }
+                    debugLogWriter ??= InitializeDebugLogWriter();
                     debugLogWriter.WriteLine(logMessage);
                 }
             }
@@ -132,6 +171,7 @@ namespace CaretTracker.Service
                 {
                     AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
                     AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+                    InitializeKeyboardHook();
                 }
 
                 if (OperatingSystem.IsWindows())
@@ -148,16 +188,25 @@ namespace CaretTracker.Service
                 configuration = Configuration.Load(eventLog: eventLog);
                 if (OperatingSystem.IsWindows())
                 {
-                    WriteLog($"Configuration loaded. Update Interval: {configuration.UpdateIntervalMs}ms, Output Path: {configuration.OutputPath}");
+                    WriteLog($"Configuration loaded. Update Interval: {configuration.UpdateIntervalMs}ms, Output Path: {configuration.OutputPath}, Debug Mode: {configuration.DebugMode}");
+                }
+
+                // Set console window visibility and position based on debug mode
+                if (OperatingSystem.IsWindows())
+                {
+                    var handle = GetConsoleWindow();
+                    if (configuration.DebugMode)
+                    {
+                        ShowWindow(handle, SW_SHOW);
+                        SetWindowPos(handle, (IntPtr)HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                    }
+                    else
+                    {
+                        ShowWindow(handle, SW_HIDE);
+                    }
                 }
 
                 cancellationTokenSource = new CancellationTokenSource();
-                Console.CancelKeyPress += (s, e) =>
-                {
-                    e.Cancel = true;
-                    cancellationTokenSource.Cancel();
-                };
-
                 await RunServiceAsync(cancellationTokenSource.Token);
             }
             catch (Exception ex)
@@ -179,20 +228,31 @@ namespace CaretTracker.Service
         {
             try
             {
-                if (OperatingSystem.IsWindows())
+                if (OperatingSystem.IsWindows() && eventLog != null)
                 {
                     WriteLog("Service is shutting down...");
                 }
 
                 // Cleanup resources
-                timer?.Dispose();
-                cancellationTokenSource?.Cancel();
-                cancellationTokenSource?.Dispose();
+                if (cancellationTokenSource != null)
+                {
+                    cancellationTokenSource.Cancel();
+                    cancellationTokenSource.Dispose();
+                }
                 debugLogWriter?.Dispose();
+                eventLog?.Dispose();
+                CleanupKeyboardHook();
+
+                // Unregister event handlers
+                if (OperatingSystem.IsWindows())
+                {
+                    AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+                    AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+                }
             }
             catch (Exception ex)
             {
-                if (OperatingSystem.IsWindows())
+                if (OperatingSystem.IsWindows() && eventLog != null)
                 {
                     WriteLog($"Error during shutdown: {ex.Message}", EventLogEntryType.Error);
                 }
@@ -207,16 +267,27 @@ namespace CaretTracker.Service
         {
             try
             {
-                if (OperatingSystem.IsWindows())
+                if (OperatingSystem.IsWindows() && eventLog != null)
                 {
                     WriteLog($"Unhandled exception: {e.ExceptionObject}", EventLogEntryType.Error);
                 }
 
                 // Cleanup resources
-                timer?.Dispose();
-                cancellationTokenSource?.Cancel();
-                cancellationTokenSource?.Dispose();
+                if (cancellationTokenSource != null)
+                {
+                    cancellationTokenSource.Cancel();
+                    cancellationTokenSource.Dispose();
+                }
                 debugLogWriter?.Dispose();
+                eventLog?.Dispose();
+                CleanupKeyboardHook();
+
+                // Unregister event handlers
+                if (OperatingSystem.IsWindows())
+                {
+                    AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+                    AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+                }
             }
             catch
             {
@@ -243,17 +314,23 @@ namespace CaretTracker.Service
                     Source = EventLogSource
                 };
 
-                eventLog.WriteEntry("Caret Tracker Service started", EventLogEntryType.Information);
+                if (OperatingSystem.IsWindows() && eventLog != null)
+                {
+                    eventLog.WriteEntry("Caret Tracker Service started", EventLogEntryType.Information);
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to initialize event log: {ex.Message}");
-                eventLog?.WriteEntry($"Failed to initialize event log: {ex.Message}", EventLogEntryType.Error);
+                if (OperatingSystem.IsWindows() && eventLog != null)
+                {
+                    eventLog.WriteEntry($"Failed to initialize event log: {ex.Message}", EventLogEntryType.Error);
+                }
             }
         }
 
         /// <summary>
-        /// Main service loop
+        /// Main service loop using Windows event hook
         /// </summary>
         private static async Task RunServiceAsync(CancellationToken cancellationToken)
         {
@@ -262,20 +339,112 @@ namespace CaretTracker.Service
                 throw new InvalidOperationException("Configuration not loaded");
             }
 
-            Console.WriteLine("Caret Tracker Service is running. Press Ctrl+C to stop.");
+            if (configuration.DebugMode)
+            {
+                Console.WriteLine("Caret Tracker Service is running in DEBUG mode. Press Ctrl+C to stop.");
+            }
+            else
+            {
+                Console.WriteLine("Caret Tracker Service is running. Press Ctrl+C to stop.");
+            }
 
             if (OperatingSystem.IsWindows())
             {
-                eventLog?.WriteEntry("Service started successfully", EventLogEntryType.Information);
-            }
+                WriteLog("Service started successfully", EventLogEntryType.Information);
 
-            // Initialize timer
-            timer = new System.Threading.Timer(
-                async _ => await TrackCaretPositionAsync(cancellationToken),
-                null,
-                TimeSpan.Zero,
-                TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs)
-            );
+                // Set up Windows event hook for caret tracking
+                var winEventProc = new WinEventDelegate((hWinEventHook, eventType, hwnd, idObject, idChild, dwEventThread, dwmsEventTime) =>
+                {
+                    try
+                    {
+                        if (configuration?.DebugMode == true)
+                        {
+                            Console.WriteLine($"Event received - Type: 0x{eventType:X}, Object: {idObject}, Child: {idChild}");
+                        }
+
+                        // Check for relevant events
+                        if (eventType == EVENT_SYSTEM_FOREGROUND || 
+                            eventType == EVENT_OBJECT_LOCATIONCHANGE || 
+                            eventType == EVENT_OBJECT_FOCUS ||
+                            eventType == EVENT_OBJECT_VALUECHANGE ||
+                            eventType == EVENT_OBJECT_SELECTION ||
+                            eventType == EVENT_OBJECT_CONTENTSCROLLED)
+                        {
+                            // If we're using fallback timer, stop it temporarily
+                            if (fallbackTimer != null)
+                            {
+                                fallbackTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                            }
+
+                            TrackCaretPositionAsync(cancellationToken).Wait();
+
+                            // Resume fallback timer if it exists
+                            if (fallbackTimer != null && configuration != null)
+                            {
+                                // If event hook is successful, use 2x interval
+                                var interval = winEventHook != IntPtr.Zero 
+                                    ? TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs * 2)
+                                    : TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs);
+                                
+                                fallbackTimer.Change(TimeSpan.Zero, interval);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (OperatingSystem.IsWindows())
+                        {
+                            WriteLog($"Error in event handler: {ex.Message}", EventLogEntryType.Error);
+                        }
+                    }
+                });
+
+                // Set up event hook for all relevant events
+                winEventHook = SetWinEventHook(
+                    EVENT_SYSTEM_FOREGROUND,  // Start with foreground window changes
+                    EVENT_OBJECT_CONTENTSCROLLED,  // End with content scroll
+                    IntPtr.Zero,  // No DLL handle needed
+                    winEventProc,
+                    0,  // All processes
+                    0,  // All threads
+                    WINEVENT_OUTOFCONTEXT
+                );
+
+                if (winEventHook == IntPtr.Zero)
+                {
+                    if (OperatingSystem.IsWindows())
+                    {
+                        WriteLog("Failed to set up event hook, falling back to timer", EventLogEntryType.Warning);
+                    }
+                    // Fallback to timer if event hook fails
+                    if (configuration != null)
+                    {
+                        fallbackTimer = new System.Threading.Timer(
+                            async _ => await TrackCaretPositionAsync(cancellationToken),
+                            null,
+                            TimeSpan.Zero,
+                            TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs)
+                        );
+                    }
+                }
+                else
+                {
+                    if (OperatingSystem.IsWindows())
+                    {
+                        WriteLog("Event hook set up successfully", EventLogEntryType.Information);
+                    }
+                    // Start with a fallback timer in case we miss some events
+                    if (configuration != null)
+                    {
+                        fallbackTimer = new System.Threading.Timer(
+                            async _ => await TrackCaretPositionAsync(cancellationToken),
+                            null,
+                            TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs * 2), // Start after a delay
+                            TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs * 2)  // Run less frequently
+                        );
+                    }
+                }
+            }
 
             try
             {
@@ -287,14 +456,20 @@ namespace CaretTracker.Service
             }
             finally
             {
-                // Cleanup timer
-                timer?.Dispose();
-                timer = null;
+                // Cleanup Windows event hook
+                if (OperatingSystem.IsWindows())
+                {
+                    if (winEventHook.HasValue && winEventHook.Value != IntPtr.Zero)
+                    {
+                        UnhookWinEvent(winEventHook.Value);
+                    }
+                    fallbackTimer?.Dispose();
+                }
             }
 
             if (OperatingSystem.IsWindows())
             {
-                eventLog?.WriteEntry("Service stopped", EventLogEntryType.Information);
+                WriteLog("Service stopped", EventLogEntryType.Information);
             }
         }
 
@@ -331,6 +506,12 @@ namespace CaretTracker.Service
                         {
                             lastPosition = position;
                             await WritePositionToFileAsync(position, configuration);
+
+                            // Log position in debug mode
+                            if (configuration.DebugMode)
+                            {
+                                Console.WriteLine($"Caret Position - X: {position.X}, Y: {position.Y}, Window: {position.WindowTitle}, Process: {position.ProcessName}");
+                            }
                         }
                     }
                 }
@@ -339,7 +520,7 @@ namespace CaretTracker.Service
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    eventLog?.WriteEntry($"Error tracking caret: {ex.Message}", EventLogEntryType.Error);
+                    WriteLog($"Error tracking caret: {ex.Message}", EventLogEntryType.Error);
                 }
                 Console.WriteLine($"Error tracking caret: {ex.Message}");
             }
@@ -361,7 +542,10 @@ namespace CaretTracker.Service
             var foregroundWindow = GetForegroundWindow();
             if (foregroundWindow == IntPtr.Zero)
             {
-                eventLog?.WriteEntry("Edge case: No active window found", EventLogEntryType.Warning);
+                if (OperatingSystem.IsWindows() && eventLog != null)
+                {
+                    eventLog.WriteEntry("Edge case: No active window found", EventLogEntryType.Warning);
+                }
                 return null;  // No active window found (e.g., desktop or system window is active)
             }
 
@@ -376,16 +560,22 @@ namespace CaretTracker.Service
             // Get GUI thread information
             if (!GetGUIThreadInfo(threadId, ref threadInfo))
             {
-                eventLog?.WriteEntry($"Edge case: Failed to get thread information for window {foregroundWindow}", 
-                    EventLogEntryType.Warning);
+                if (OperatingSystem.IsWindows() && eventLog != null)
+                {
+                    eventLog.WriteEntry($"Edge case: Failed to get thread information for window {foregroundWindow}", 
+                        EventLogEntryType.Warning);
+                }
                 return null;  // Failed to get thread information (e.g., insufficient permissions or thread not found)
             }
 
             // Check if caret exists
             if (threadInfo.hwndCaret == IntPtr.Zero)
             {
-                eventLog?.WriteEntry($"Edge case: No caret present in window {foregroundWindow}", 
-                    EventLogEntryType.Warning);
+                if (OperatingSystem.IsWindows() && eventLog != null)
+                {
+                    eventLog.WriteEntry($"Edge case: No caret present in window {foregroundWindow}", 
+                        EventLogEntryType.Warning);
+                }
                 return null;  // No caret present in the active window (e.g., no text input focus or unsupported application)
             }
 
@@ -399,8 +589,11 @@ namespace CaretTracker.Service
             // Convert client coordinates to screen coordinates
             if (!ClientToScreen(threadInfo.hwndCaret, ref point))
             {
-                eventLog?.WriteEntry($"Edge case: Failed to convert coordinates for window {foregroundWindow}", 
-                    EventLogEntryType.Warning);
+                if (OperatingSystem.IsWindows() && eventLog != null)
+                {
+                    eventLog.WriteEntry($"Edge case: Failed to convert coordinates for window {foregroundWindow}", 
+                        EventLogEntryType.Warning);
+                }
                 return null;  // Failed to convert coordinates (e.g., window closed or invalid state)
             }
 
@@ -449,13 +642,20 @@ namespace CaretTracker.Service
         {
             try
             {
-                string outputDir = config.GetExpandedOutputDirectory();
+                // Use a fixed path in AppData
+                string outputDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "dev-coder-v1"
+                );
+
+                // Ensure directory exists
                 if (!Directory.Exists(outputDir))
                 {
                     Directory.CreateDirectory(outputDir);
                 }
 
-                string fileName = Path.Combine(outputDir, $"caret_{DateTime.Now:yyyyMMdd_HHmmss}.json");
+                // Use a fixed filename
+                string fileName = Path.Combine(outputDir, "caret_position.json");
                 string json = JsonSerializer.Serialize(position, new JsonSerializerOptions { WriteIndented = true });
                 await File.WriteAllTextAsync(fileName, json);
 
@@ -471,6 +671,113 @@ namespace CaretTracker.Service
                     WriteLog($"Error writing position to file: {ex.Message}", EventLogEntryType.Error);
                 }
                 Console.WriteLine($"Error writing position to file: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Initializes the debug log writer
+        /// </summary>
+        private static StreamWriter InitializeDebugLogWriter()
+        {
+            var logPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "dev-coder-v1",
+                "caret_tracker_debug.log"
+            );
+            
+            // Ensure directory exists
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+            
+            return new StreamWriter(logPath, true, Encoding.UTF8)
+            {
+                AutoFlush = true
+            };
+        }
+
+        private static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0)
+            {
+                int vkCode = Marshal.ReadInt32(lParam);
+
+                if (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)
+                {
+                    if (vkCode == VK_CONTROL)
+                    {
+                        isCtrlPressed = true;
+                    }
+                    else if (vkCode == VK_C && isCtrlPressed)
+                    {
+                        // Ctrl+C detected, handle it
+                        if (OperatingSystem.IsWindows())
+                        {
+                            WriteLog("Ctrl+C detected, initiating graceful shutdown...", EventLogEntryType.Information);
+                        }
+                        cancellationTokenSource?.Cancel();
+                        return (IntPtr)1; // Block the key
+                    }
+                }
+                else
+                {
+                    if (vkCode == VK_CONTROL)
+                    {
+                        isCtrlPressed = false;
+                    }
+                }
+            }
+            return CallNextHookEx(keyboardHook ?? IntPtr.Zero, nCode, wParam, lParam);
+        }
+
+        private static void InitializeKeyboardHook()
+        {
+            if (!OperatingSystem.IsWindows()) return;
+
+            try
+            {
+                using (Process curProcess = Process.GetCurrentProcess())
+                using (ProcessModule curModule = curProcess.MainModule!)
+                {
+                    var moduleName = curModule.ModuleName;
+                    if (string.IsNullOrEmpty(moduleName))
+                    {
+                        if (OperatingSystem.IsWindows())
+                        {
+                            WriteLog("Failed to get module name", EventLogEntryType.Warning);
+                        }
+                        return;
+                    }
+
+                    keyboardHook = SetWindowsHookEx(
+                        WH_KEYBOARD_LL,
+                        KeyboardHookCallback,
+                        GetModuleHandle(moduleName),
+                        0
+                    );
+
+                    if (keyboardHook == IntPtr.Zero)
+                    {
+                        if (OperatingSystem.IsWindows())
+                        {
+                            WriteLog("Failed to set keyboard hook", EventLogEntryType.Warning);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    WriteLog($"Error setting keyboard hook: {ex.Message}", EventLogEntryType.Error);
+                }
+            }
+        }
+
+        private static void CleanupKeyboardHook()
+        {
+            if (OperatingSystem.IsWindows() && keyboardHook.HasValue && keyboardHook.Value != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(keyboardHook.Value);
+                keyboardHook = null;
             }
         }
     }

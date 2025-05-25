@@ -1,4 +1,5 @@
 {
     "update_interval_ms": 100,
-    "output_path": "%AppData%\\dev-coder-v1\\caret_position.json"
+    "output_path": "%AppData%\\dev-coder-v1\\caret_position.json",
+    "debug_mode": true
 }

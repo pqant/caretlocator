@@ -24,6 +24,12 @@ namespace CaretTracker.Service
         [JsonPropertyName("output_path")]
         public string OutputPath { get; set; } = "%AppData%\\dev-coder-v1\\caret_position.json"; // Default value
 
+        /// <summary>
+        /// Gets or sets the debug mode for the application.
+        /// </summary>
+        [JsonPropertyName("debug_mode")]
+        public bool DebugMode { get; set; } = false;
+
         private const string DefaultConfigFileName = "caret_config.json";
 
         /// <summary>
