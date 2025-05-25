@@ -71,6 +71,54 @@ namespace CaretTracker.Service
         private static Configuration? configuration;
         private static CaretPosition? lastPosition = null;
         private static System.Threading.Timer? timer;
+        private static StreamWriter? debugLogWriter;
+        private static readonly object logLock = new object();
+
+        /// <summary>
+        /// Writes a log entry to both EventLog and debug log file
+        /// </summary>
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+        private static void WriteLog(string message, EventLogEntryType entryType = EventLogEntryType.Information)
+        {
+            var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+            var logMessage = $"[{timestamp}] [{entryType}] {message}";
+
+            // Write to EventLog if on Windows
+            if (OperatingSystem.IsWindows())
+            {
+                eventLog?.WriteEntry(message, entryType);
+            }
+
+            // Write to debug log file
+            try
+            {
+                lock (logLock)
+                {
+                    if (debugLogWriter == null)
+                    {
+                        var logPath = Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                            "dev-coder-v1",
+                            "caret_tracker_debug.log"
+                        );
+                        
+                        // Ensure directory exists
+                        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+                        
+                        debugLogWriter = new StreamWriter(logPath, true, Encoding.UTF8)
+                        {
+                            AutoFlush = true
+                        };
+                    }
+                    debugLogWriter.WriteLine(logMessage);
+                }
+            }
+            catch (Exception ex)
+            {
+                // If we can't write to debug log, at least try to write to console
+                Console.WriteLine($"Failed to write to debug log: {ex.Message}");
+            }
+        }
 
         /// <summary>
         /// Main entry point of the application
@@ -80,19 +128,27 @@ namespace CaretTracker.Service
             try
             {
                 // Register system event handlers
-                AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
-                AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+                if (OperatingSystem.IsWindows())
+                {
+                    AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+                    AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+                }
 
                 if (OperatingSystem.IsWindows())
                 {
                     InitializeEventLog();
                 }
 
+                if (OperatingSystem.IsWindows())
+                {
+                    WriteLog("Caret Tracker Service starting...");
+                }
+
                 // Load configuration
                 configuration = Configuration.Load(eventLog: eventLog);
                 if (OperatingSystem.IsWindows())
                 {
-                    eventLog?.WriteEntry($"Configuration loaded. Update Interval: {configuration.UpdateIntervalMs}ms, Output Path: {configuration.OutputPath}", EventLogEntryType.Information);
+                    WriteLog($"Configuration loaded. Update Interval: {configuration.UpdateIntervalMs}ms, Output Path: {configuration.OutputPath}");
                 }
 
                 cancellationTokenSource = new CancellationTokenSource();
@@ -108,7 +164,7 @@ namespace CaretTracker.Service
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    eventLog?.WriteEntry($"Fatal error: {ex.Message}", EventLogEntryType.Error);
+                    WriteLog($"Fatal error: {ex.Message}", EventLogEntryType.Error);
                 }
                 Console.WriteLine($"Fatal error: {ex.Message}");
                 Environment.Exit(1);
@@ -118,25 +174,27 @@ namespace CaretTracker.Service
         /// <summary>
         /// Handles process exit event
         /// </summary>
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
         private static void OnProcessExit(object? sender, EventArgs e)
         {
             try
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    eventLog?.WriteEntry("Service is shutting down...", EventLogEntryType.Information);
+                    WriteLog("Service is shutting down...");
                 }
 
                 // Cleanup resources
                 timer?.Dispose();
                 cancellationTokenSource?.Cancel();
                 cancellationTokenSource?.Dispose();
+                debugLogWriter?.Dispose();
             }
             catch (Exception ex)
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    eventLog?.WriteEntry($"Error during shutdown: {ex.Message}", EventLogEntryType.Error);
+                    WriteLog($"Error during shutdown: {ex.Message}", EventLogEntryType.Error);
                 }
             }
         }
@@ -144,19 +202,21 @@ namespace CaretTracker.Service
         /// <summary>
         /// Handles unhandled exceptions
         /// </summary>
+        [System.Runtime.Versioning.SupportedOSPlatform("windows")]
         private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
             try
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    eventLog?.WriteEntry($"Unhandled exception: {e.ExceptionObject}", EventLogEntryType.Error);
+                    WriteLog($"Unhandled exception: {e.ExceptionObject}", EventLogEntryType.Error);
                 }
 
                 // Cleanup resources
                 timer?.Dispose();
                 cancellationTokenSource?.Cancel();
                 cancellationTokenSource?.Dispose();
+                debugLogWriter?.Dispose();
             }
             catch
             {
