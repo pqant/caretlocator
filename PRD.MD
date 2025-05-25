@@ -10,7 +10,7 @@
 
 ## 1. Objective
 
-The **Caret Tracker Service** is a lightweight, headless background application designed to detect and report the screen position of the **blinking text input caret (text cursor)** in real-time. This positional data will be consumed by an Electron-based overlay application ("Ghost Aid") to dynamically position transparent text windows without interfering with the user's typing flow.
+The **Caret Tracker Service** is a lightweight, headless background application designed to detect and report the screen position of the **blinking text input caret (text cursor)** in real-time. This positional data will be consumed by an Electron-based overlay application ("Hayalet") to dynamically position transparent text windows without interfering with the user's typing flow.
 
 The caret tracker must run independently, regardless of which application is focused (e.g., browser, Notepad, Word), and continuously write the caret coordinates into a shared JSON file accessible by the overlay system.
 
@@ -70,7 +70,7 @@ The output must follow this strict schema, with all keys prefixed using `caret_`
 
 | Property           | Value |
 |--------------------|-------|
-| Output File Path   | `%AppData%\GhostAid\caret_position.json` |
+| Output File Path   | `%AppData%\dev-coder-v1\caret_position.json` |
 | Update Interval    | Default: 100ms (configurable) |
 | Configurable Path? | Yes, via optional config JSON file |
 
@@ -83,7 +83,7 @@ A configuration file (e.g., `caret_config.json`) can override default settings:
 <pre>
 {
   "caret_updateIntervalMs": 100,
-  "caret_outputPath": "%AppData%\\GhostAid\\caret_position.json"
+  "caret_outputPath": "%AppData%\\dev-coder-v1\\caret_position.json"
 }
 </pre>
 
