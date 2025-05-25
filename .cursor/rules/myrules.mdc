@@ -3,4 +3,9 @@ description:
 globs: 
 alwaysApply: true
 ---
-hangi modelin calistigi bilgisini her cevaptan sonra yaz.
+1. model olarak sadece claude-3.7-sonnet-thinking, claude-4-opus-thinking, claude-4-sonnet-thinking veya Gemini-2.5-Pro-preview-05-06 modellerinden birini kullanabilirsin.. Digerlerini kesinlikle kullanamazsin!
+
+
+
+
+2. hangi modelin calistigi bilgisini her cevaptan sonra yaz.
