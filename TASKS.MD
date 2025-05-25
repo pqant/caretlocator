@@ -4,12 +4,12 @@
 
 ## Setup Tasks
 
-- [] **TASK-001**: Initialize project structure
+- [X] **TASK-001**: Initialize project structure
   - Create .NET 6.0 application
   - Setup solution and project files
   - Configure build settings for x64 architecture
 
-- [ ] **TASK-002**: Create configuration system
+- [X] **TASK-002**: Create configuration system
   - Implement reading from `caret_config.json`
   - Support configurable update interval and output path
   - Add default configuration values
