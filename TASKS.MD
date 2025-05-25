@@ -16,12 +16,12 @@
 
 ## Core Implementation Tasks
 
-- [ ] **TASK-003**: Implement caret position detection
+- [X] **TASK-003**: Implement caret position detection
   - Use Windows API (`GetGUIThreadInfo`)
   - Implement coordinate conversion (`ClientToScreen`)
   - Handle edge cases (no focused window, no caret)
 
-- [ ] **TASK-004**: Create JSON output system
+- [X] **TASK-004**: Create JSON output system
   - Implement serialization using `System.Text.Json`
   - Follow required schema with `caret_` prefixes
   - Create output directory if it doesn't exist
