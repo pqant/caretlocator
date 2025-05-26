@@ -31,10 +31,10 @@ if (Test-Path $configPath) {
 try {
     if ($debugMode) {
         Write-Host "Starting Caret Tracker Service in DEBUG mode..."
-        Start-Process -FilePath $exePath -WindowStyle Normal
+        Start-Process -FilePath $exePath -WindowStyle Normal -Verb RunAs
     } else {
         Write-Host "Starting Caret Tracker Service in background..."
-        Start-Process -FilePath $exePath -WindowStyle Hidden
+        Start-Process -FilePath $exePath -WindowStyle Hidden -Verb RunAs
     }
     Write-Host "Caret Tracker Service started successfully."
 } catch {

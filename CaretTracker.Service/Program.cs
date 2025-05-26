@@ -100,11 +100,20 @@ namespace CaretTracker.Service
         private const int SW_SHOW = 5;
         private const uint WINEVENT_OUTOFCONTEXT = 0;
         private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        private const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
+        private const uint EVENT_SYSTEM_MOVESIZESTART = 0x000A;
+        private const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
+        private const uint EVENT_SYSTEM_SWITCHSTART = 0x0014;
+        private const uint EVENT_SYSTEM_SWITCHEND = 0x0015;
         private const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
         private const uint EVENT_OBJECT_FOCUS = 0x8005;
         private const uint EVENT_OBJECT_VALUECHANGE = 0x800E;
         private const uint EVENT_OBJECT_SELECTION = 0x8006;
         private const uint EVENT_OBJECT_CONTENTSCROLLED = 0x8015;
+        private const uint EVENT_OBJECT_SHOW = 0x8002;
+        private const uint EVENT_OBJECT_HIDE = 0x8003;
+        private const uint EVENT_OBJECT_CREATE = 0x8000;
+        private const uint EVENT_OBJECT_DESTROY = 0x8001;
         private const int HWND_TOPMOST = -1;
         private const uint SWP_NOMOVE = 0x0002;
         private const uint SWP_NOSIZE = 0x0001;
@@ -125,8 +134,6 @@ namespace CaretTracker.Service
         private static StreamWriter? debugLogWriter;
         private static readonly object logLock = new object();
         private static System.Threading.Timer? fallbackTimer;
-        private static IntPtr? keyboardHook;
-        private static bool isCtrlPressed = false;
 
         /// <summary>
         /// Writes a log entry to both EventLog and debug log file
@@ -171,7 +178,7 @@ namespace CaretTracker.Service
                 {
                     AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
                     AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
-                    InitializeKeyboardHook();
+                    Console.CancelKeyPress += OnCancelKeyPress;
                 }
 
                 if (OperatingSystem.IsWindows())
@@ -209,6 +216,15 @@ namespace CaretTracker.Service
                 cancellationTokenSource = new CancellationTokenSource();
                 await RunServiceAsync(cancellationTokenSource.Token);
             }
+            catch (TaskCanceledException)
+            {
+                // Service stopped by user (Ctrl+C)
+                if (OperatingSystem.IsWindows())
+                {
+                    WriteLog("Service stopped by user (Ctrl+C).", EventLogEntryType.Information);
+                }
+                Console.WriteLine("Service stopped by user (Ctrl+C).");
+            }
             catch (Exception ex)
             {
                 if (OperatingSystem.IsWindows())
@@ -218,6 +234,16 @@ namespace CaretTracker.Service
                 Console.WriteLine($"Fatal error: {ex.Message}");
                 Environment.Exit(1);
             }
+        }
+
+        private static void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+        {
+            e.Cancel = true; // Prevent the default Ctrl+C behavior
+            if (OperatingSystem.IsWindows())
+            {
+                WriteLog("Ctrl+C detected, initiating graceful shutdown...", EventLogEntryType.Information);
+            }
+            cancellationTokenSource?.Cancel();
         }
 
         /// <summary>
@@ -241,13 +267,13 @@ namespace CaretTracker.Service
                 }
                 debugLogWriter?.Dispose();
                 eventLog?.Dispose();
-                CleanupKeyboardHook();
 
                 // Unregister event handlers
                 if (OperatingSystem.IsWindows())
                 {
                     AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
                     AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+                    Console.CancelKeyPress -= OnCancelKeyPress;
                 }
             }
             catch (Exception ex)
@@ -280,13 +306,13 @@ namespace CaretTracker.Service
                 }
                 debugLogWriter?.Dispose();
                 eventLog?.Dispose();
-                CleanupKeyboardHook();
 
                 // Unregister event handlers
                 if (OperatingSystem.IsWindows())
                 {
                     AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
                     AppDomain.CurrentDomain.UnhandledException -= OnUnhandledException;
+                    Console.CancelKeyPress -= OnCancelKeyPress;
                 }
             }
             catch
@@ -329,6 +355,9 @@ namespace CaretTracker.Service
             }
         }
 
+        private static IntPtr? windowEventHook;
+        private static IntPtr? objectEventHook;
+
         /// <summary>
         /// Main service loop using Windows event hook
         /// </summary>
@@ -362,32 +391,24 @@ namespace CaretTracker.Service
                             Console.WriteLine($"Event received - Type: 0x{eventType:X}, Object: {idObject}, Child: {idChild}");
                         }
 
-                        // Check for relevant events
-                        if (eventType == EVENT_SYSTEM_FOREGROUND || 
-                            eventType == EVENT_OBJECT_LOCATIONCHANGE || 
-                            eventType == EVENT_OBJECT_FOCUS ||
-                            eventType == EVENT_OBJECT_VALUECHANGE ||
-                            eventType == EVENT_OBJECT_SELECTION ||
-                            eventType == EVENT_OBJECT_CONTENTSCROLLED)
+                        // Track caret position for all events that might affect it
+                        // If we're using fallback timer, stop it temporarily
+                        if (fallbackTimer != null)
                         {
-                            // If we're using fallback timer, stop it temporarily
-                            if (fallbackTimer != null)
-                            {
-                                fallbackTimer.Change(Timeout.Infinite, Timeout.Infinite);
-                            }
+                            fallbackTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                        }
 
-                            TrackCaretPositionAsync(cancellationToken).Wait();
+                        TrackCaretPositionAsync(cancellationToken).Wait();
 
-                            // Resume fallback timer if it exists
-                            if (fallbackTimer != null && configuration != null)
-                            {
-                                // If event hook is successful, use 2x interval
-                                var interval = winEventHook != IntPtr.Zero 
-                                    ? TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs * 2)
-                                    : TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs);
-                                
-                                fallbackTimer.Change(TimeSpan.Zero, interval);
-                            }
+                        // Resume fallback timer if it exists
+                        if (fallbackTimer != null && configuration != null)
+                        {
+                            // If event hook is successful, use 2x interval
+                            var interval = winEventHook != IntPtr.Zero 
+                                ? TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs * 2)
+                                : TimeSpan.FromMilliseconds(configuration.UpdateIntervalMs);
+                            
+                            fallbackTimer.Change(TimeSpan.Zero, interval);
                         }
                     }
                     catch (Exception ex)
@@ -399,7 +420,7 @@ namespace CaretTracker.Service
                     }
                 });
 
-                // Set up event hook for all relevant events
+                // Set up event hooks for all relevant events
                 winEventHook = SetWinEventHook(
                     EVENT_SYSTEM_FOREGROUND,  // Start with foreground window changes
                     EVENT_OBJECT_CONTENTSCROLLED,  // End with content scroll
@@ -410,13 +431,34 @@ namespace CaretTracker.Service
                     WINEVENT_OUTOFCONTEXT
                 );
 
-                if (winEventHook == IntPtr.Zero)
+                // Set up additional event hooks for window changes
+                windowEventHook = SetWinEventHook(
+                    EVENT_SYSTEM_MINIMIZEEND,
+                    EVENT_SYSTEM_SWITCHEND,
+                    IntPtr.Zero,
+                    winEventProc,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT
+                );
+
+                objectEventHook = SetWinEventHook(
+                    EVENT_OBJECT_SHOW,
+                    EVENT_OBJECT_DESTROY,
+                    IntPtr.Zero,
+                    winEventProc,
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT
+                );
+
+                if (winEventHook == IntPtr.Zero && windowEventHook == IntPtr.Zero && objectEventHook == IntPtr.Zero)
                 {
                     if (OperatingSystem.IsWindows())
                     {
-                        WriteLog("Failed to set up event hook, falling back to timer", EventLogEntryType.Warning);
+                        WriteLog("Failed to set up event hooks, falling back to timer", EventLogEntryType.Warning);
                     }
-                    // Fallback to timer if event hook fails
+                    // Fallback to timer if event hooks fail
                     if (configuration != null)
                     {
                         fallbackTimer = new System.Threading.Timer(
@@ -431,7 +473,7 @@ namespace CaretTracker.Service
                 {
                     if (OperatingSystem.IsWindows())
                     {
-                        WriteLog("Event hook set up successfully", EventLogEntryType.Information);
+                        WriteLog("Event hooks set up successfully", EventLogEntryType.Information);
                     }
                     // Start with a fallback timer in case we miss some events
                     if (configuration != null)
@@ -456,12 +498,20 @@ namespace CaretTracker.Service
             }
             finally
             {
-                // Cleanup Windows event hook
+                // Cleanup Windows event hooks
                 if (OperatingSystem.IsWindows())
                 {
                     if (winEventHook.HasValue && winEventHook.Value != IntPtr.Zero)
                     {
                         UnhookWinEvent(winEventHook.Value);
+                    }
+                    if (windowEventHook.HasValue && windowEventHook.Value != IntPtr.Zero)
+                    {
+                        UnhookWinEvent(windowEventHook.Value);
+                    }
+                    if (objectEventHook.HasValue && objectEventHook.Value != IntPtr.Zero)
+                    {
+                        UnhookWinEvent(objectEventHook.Value);
                     }
                     fallbackTimer?.Dispose();
                 }
@@ -692,93 +742,6 @@ namespace CaretTracker.Service
             {
                 AutoFlush = true
             };
-        }
-
-        private static IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-        {
-            if (nCode >= 0)
-            {
-                int vkCode = Marshal.ReadInt32(lParam);
-
-                if (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN)
-                {
-                    if (vkCode == VK_CONTROL)
-                    {
-                        isCtrlPressed = true;
-                    }
-                    else if (vkCode == VK_C && isCtrlPressed)
-                    {
-                        // Ctrl+C detected, handle it
-                        if (OperatingSystem.IsWindows())
-                        {
-                            WriteLog("Ctrl+C detected, initiating graceful shutdown...", EventLogEntryType.Information);
-                        }
-                        cancellationTokenSource?.Cancel();
-                        return (IntPtr)1; // Block the key
-                    }
-                }
-                else
-                {
-                    if (vkCode == VK_CONTROL)
-                    {
-                        isCtrlPressed = false;
-                    }
-                }
-            }
-            return CallNextHookEx(keyboardHook ?? IntPtr.Zero, nCode, wParam, lParam);
-        }
-
-        private static void InitializeKeyboardHook()
-        {
-            if (!OperatingSystem.IsWindows()) return;
-
-            try
-            {
-                using (Process curProcess = Process.GetCurrentProcess())
-                using (ProcessModule curModule = curProcess.MainModule!)
-                {
-                    var moduleName = curModule.ModuleName;
-                    if (string.IsNullOrEmpty(moduleName))
-                    {
-                        if (OperatingSystem.IsWindows())
-                        {
-                            WriteLog("Failed to get module name", EventLogEntryType.Warning);
-                        }
-                        return;
-                    }
-
-                    keyboardHook = SetWindowsHookEx(
-                        WH_KEYBOARD_LL,
-                        KeyboardHookCallback,
-                        GetModuleHandle(moduleName),
-                        0
-                    );
-
-                    if (keyboardHook == IntPtr.Zero)
-                    {
-                        if (OperatingSystem.IsWindows())
-                        {
-                            WriteLog("Failed to set keyboard hook", EventLogEntryType.Warning);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                if (OperatingSystem.IsWindows())
-                {
-                    WriteLog($"Error setting keyboard hook: {ex.Message}", EventLogEntryType.Error);
-                }
-            }
-        }
-
-        private static void CleanupKeyboardHook()
-        {
-            if (OperatingSystem.IsWindows() && keyboardHook.HasValue && keyboardHook.Value != IntPtr.Zero)
-            {
-                UnhookWindowsHookEx(keyboardHook.Value);
-                keyboardHook = null;
-            }
         }
     }
 }
